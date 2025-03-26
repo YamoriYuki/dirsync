@@ -25,9 +25,11 @@ class Synchronizer():
         self.logger.debug(f"dryrun = {dryrun}")
         self.logger.debug(f"by_content = {by_content}")
         source_path = Path(source).absolute()
+        # Following section may raise exceptions during path checks in the setup process.
+        # Letting them propagate and stop execution is the desired result here.
         if not follow_symlinks:
             for parent in source_path.parents:
-                if parent.is_symlink:
+                if parent.is_symlink():
                     self.logger.critical(f"SOURCE path {source_path} contains symlink(s) but --do-not-follow-symlinks is enabled")
                     raise Exception(f"SOURCE path contains symlink(s)")
         if not source_path.exists():
@@ -43,7 +45,7 @@ class Synchronizer():
         dest_path = Path(dest).absolute()
         if not follow_symlinks:
             for parent in dest_path.parents:
-                if parent.is_symlink:
+                if parent.is_symlink():
                     self.logger.critical(f"DEST path {dest_path} contains symlink(s) but --do-not-follow-symlinks is enabled")
                     raise Exception(f"DEST path contains symlink(s)")
         if not dest_path.exists():
@@ -68,7 +70,7 @@ class Synchronizer():
         self.interval = interval
         self.ignore_list = []
         self.seen_inos = {}
-    
+
     def sync_dirs(self, source, dest, compared):
         items_to_check = [source.joinpath(item) for item in compared.left_list] + [dest.joinpath(item) for item in compared.right_list]
         funny_items = [item for item in items_to_check if self.is_funny(item, self.follow_symlinks)]
@@ -77,86 +79,98 @@ class Synchronizer():
             self.logger.warning(f"{item} in not a regular file, symlink or directory. Ignoring.")
         for dir_name, dir_compared in [ (dir, cmp) for (dir, cmp) in compared.subdirs.items() if not source.joinpath(dir) in self.ignore_list]:
             dir_path = source.joinpath(dir_name)
-            ino = os.stat(dir_path).st_ino
-            if ino in self.seen_inos.keys():
-                self.logger.warning(f"Directory {dir_path} has been previously encountered at {self.seen_inos[ino]}, skipping.")
-            else:
-                self.seen_inos[ino] = dir_path
-                self.sync_dirs(source.joinpath(dir_name), dest.joinpath(dir_name), dir_compared)
+            try:
+                ino = os.stat(dir_path).st_ino
+                if ino in self.seen_inos.keys():
+                    self.logger.warning(f"Directory {dir_path} has been previously encountered at {self.seen_inos[ino]}, skipping.")
+                else:
+                    self.seen_inos[ino] = dir_path
+                    self.sync_dirs(source.joinpath(dir_name), dest.joinpath(dir_name), dir_compared)
+            except Exception as e:
+                self.logger.error(f"Error {e} encountered. Continuing.")
         for item in [ dest.joinpath(item) for item in compared.right_only if not dest.joinpath(item) in self.ignore_list]:
-            if not self.follow_symlinks and item.is_symlink():
-                self.logger.info(f"Deleting symlink {item}.")
-                item.unlink()
-            elif item.is_dir():
-                self.logger.info(f"Deleting directory tree {item}.")
-                shutil.rmtree(item)
-            elif item.is_file():
-                self.logger.info(f"Deleting file {item}.")
-                item.unlink()
-            else:
-                self.logger.error(f"SHOULD NOT HAPPEN: {item} is not a regular file, symlink or directory. NOT deleting")
-
+            try:
+                if not self.follow_symlinks and item.is_symlink():
+                    self.logger.info(f"Deleting symlink {item}.")
+                    item.unlink()
+                elif item.is_dir():
+                    self.logger.info(f"Deleting directory tree {item}.")
+                    shutil.rmtree(item)
+                elif item.is_file():
+                    self.logger.info(f"Deleting file {item}.")
+                    item.unlink()
+                else:
+                    raise Exception(f"SHOULD NOT HAPPEN: {item} is not a regular file, symlink or directory. NOT deleting.")
+            except Exception as e:
+                self.logger.error(f"Error {e} encountered. Continuing.")
         for item in [ item for item in compared.left_only if not source.joinpath(item) in self.ignore_list]:
             source_path = source.joinpath(item)
             dest_path = dest.joinpath(item)
-            if not self.follow_symlinks and source_path.is_symlink():
-                self.logger.info(f"Copying symlink {source_path}.")
-                self.copy_symlink(source_path, dest_path)
-            elif source_path.is_dir():
-                self.logger.info(f"Copying directory tree {source_path}.")
-                shutil.copytree(source_path, dest_path, not self.follow_symlinks)
-            elif source_path.is_file():
-                self.logger.info(f"Copying file {source_path}.")
-                shutil.copy2(source_path, dest_path)
-            else:
-                self.logger.error(f"SHOULD NOT HAPPEN: {source_path} is not a regular file, symlink or directory. NOT copying")
-
+            try:
+                if not self.follow_symlinks and source_path.is_symlink():
+                    self.logger.info(f"Copying symlink {source_path}.")
+                    self.copy_symlink(source_path, dest_path)
+                elif source_path.is_dir():
+                    self.logger.info(f"Copying directory tree {source_path}.")
+                    shutil.copytree(source_path, dest_path, not self.follow_symlinks)
+                elif source_path.is_file():
+                    self.logger.info(f"Copying file {source_path}.")
+                    shutil.copy2(source_path, dest_path)
+                else:
+                    raise Exception(f"SHOULD NOT HAPPEN: {source_path} is not a regular file, symlink or directory. NOT copying")
+            except Exception as e:
+                self.logger.error(f"Error {e} encountered. Continuing.")
         for item in [ item for item in compared.common_funny if not source.joinpath(item) in self.ignore_list]:
             source_path = source.joinpath(item)
             dest_path = dest.joinpath(item)
-            if dest_path in self.ignore_list:
-                self.logger.warn(f"Cannot replace ingnored {dest_path} with {source_path}")
-                continue
-            if not self.follow_symlinks and source_path.is_symlink():
-                self.logger.info(f"Replacing {dest_path} with symlink {source_path}.")
-                if dest_path.is_dir():
-                    shutil.rmtree(dest_path)
+            try:
+                if dest_path in self.ignore_list:
+                    self.logger.warn(f"Cannot replace ingnored {dest_path} with {source_path}")
+                    continue
+                if not self.follow_symlinks and source_path.is_symlink():
+                    self.logger.info(f"Replacing {dest_path} with symlink {source_path}.")
+                    if dest_path.is_dir():
+                        shutil.rmtree(dest_path)
+                    else:
+                        dest_path.unlink()
+                    self.copy_symlink(source_path, dest_path)
+                elif source_path.is_dir():
+                    self.logger.info(f"Replacing {dest_path} with directory tree {source_path}.")
+                    if dest_path.is_dir():
+                        shutil.rmtree(dest_path)
+                    else:
+                        dest_path.unlink()
+                    shutil.copytree(source_path, dest_path, not self.follow_symlinks)
+                elif source_path.is_file():
+                    self.logger.info(f"Replacing {dest_path} with file {source_path}.")
+                    if dest_path.is_dir():
+                        shutil.rmtree(dest_path)
+                    else:
+                        dest_path.unlink()
+                    shutil.copy2(source_path, dest_path)
                 else:
-                    dest_path.unlink()
-                self.copy_symlink(source_path, dest_path)
-            elif source_path.is_dir():
-                self.logger.info(f"Replacing {dest_path} with directory tree {source_path}.")
-                if dest_path.is_dir():
-                    shutil.rmtree(dest_path)
-                else:
-                    dest_path.unlink()
-                shutil.copytree(source_path, dest_path, not self.follow_symlinks)
-            elif source_path.is_file():
-                self.logger.info(f"Replacing {dest_path} with file {source_path}.")
-                if dest_path.is_dir():
-                    shutil.rmtree(dest_path)
-                else:
-                    dest_path.unlink()
-                shutil.copy2(source_path, dest_path)
-            else:
-                self.logger.error(f"SHOULD NOT HAPPEN: {source_path} is not a regular file, symlink or directory. NOT copying")
-
+                    raise Exception(f"SHOULD NOT HAPPEN: {source_path} is not a regular file, symlink or directory. NOT copying")
+            except Exception as e:
+                self.logger.error(f"Error {e} encountered. Continuing.")
         for item in [ item for item in compared.diff_files if not source.joinpath(item) in self.ignore_list]:
             source_path = source.joinpath(item)
             dest_path = dest.joinpath(item)
-            if dest_path in self.ignore_list:
-                self.logger.warn(f"Cannot replace ingnored {dest_path} with {source_path}")
-                continue
-            if not self.follow_symlinks and source_path.is_symlink():
-                self.logger.info(f"Replacing {dest_path} with symlink {source_path}.")
-                dest_path.unlink()
-                self.copy_symlink(source_path, dest_path)
-            elif source_path.is_file():
-                self.logger.info(f"Replacing {dest_path} with file {source_path}.")
-                dest_path.unlink()
-                shutil.copy2(source_path, dest_path)
-            else:
-                self.logger.error(f"SHOULD NOT HAPPEN: {source_path} is not a regular file or symlink. NOT copying")
+            try:
+                if dest_path in self.ignore_list:
+                    self.logger.warn(f"Cannot replace ingnored {dest_path} with {source_path}")
+                    continue
+                if not self.follow_symlinks and source_path.is_symlink():
+                    self.logger.info(f"Replacing {dest_path} with symlink {source_path}.")
+                    dest_path.unlink()
+                    self.copy_symlink(source_path, dest_path)
+                elif source_path.is_file():
+                    self.logger.info(f"Replacing {dest_path} with file {source_path}.")
+                    dest_path.unlink()
+                    shutil.copy2(source_path, dest_path)
+                else:
+                    raise Exception(f"SHOULD NOT HAPPEN: {source_path} is not a regular file or symlink. NOT copying")
+            except Exception as e:
+                self.logger.error(f"Error {e} encountered. Continuing.")
 
     def copy_symlink(self, source, dest):
         link_dest = Path(source.readlink())
@@ -165,16 +179,19 @@ class Synchronizer():
             dest.symlink_to(link_target_in_dest, link_dest.is_dir())
         else:
             shutil.copy2(source, dest, follow_symlinks=False)
-    
+
     def run(self):
         while True:
             self.logger.info("Starting sync")
-            self.sync_dirs(self.source, self.dest, dircmp(self.source, self.dest, shallow = not self.by_content))
+            try:
+                self.sync_dirs(self.source, self.dest, dircmp(self.source, self.dest, shallow = not self.by_content))
+            except:
+                self.logger.error(f"Error {e} encountered. Continuing.")
             self.seen_inos.clear()
             self.next_run += self.interval
             self.logger.info("Sync complete, sleeping until next run")
             time.sleep(max(self.next_run - time.time(),0))
-    
+
     @staticmethod
     def is_funny(path, follow_symlinks):
         return not (path.is_dir(follow_symlinks = follow_symlinks) or
